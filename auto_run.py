@@ -145,7 +145,8 @@ async def auto_authorize_and_get_account(
             raw_uid = await tsnPasswordAuthServer(school_id, username, password, db)
             logger.info(f"授权成功，原始返回 uid = {raw_uid} (type: {type(raw_uid)})")
         except Exception as e:
-            logger.error(f"授权失败: {e}")
+            logger.error(f"授权失败: {type(e).__name__}: {e!r}")
+            logger.exception("授权异常堆栈")
             return None
 
         if isinstance(raw_uid, str) and ":" in raw_uid:
