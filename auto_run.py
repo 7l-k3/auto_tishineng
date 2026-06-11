@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Automated running workflow with local school-data fallback."""
+"""Automated running workflow with robust school bootstrap options."""
 
 import asyncio
 import json
@@ -21,39 +21,24 @@ from tsnRunServer import TsnRunServer, TsnRunType
 MAX_DISTANCE = 10.0
 
 
-async def get_school_info_from_api(school_code: str):
-    """Fetch school metadata from the upstream API."""
-    import httpx
+def parse_bool_env(value: Optional[str], default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
-    url = f"https://h.tsnkj.com/upms/sysSchool/getSchoolInfo?schoolCode={school_code}"
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers={"User-Agent": "okhttp/4.9.0"})
-            if resp.status_code != 200:
-                logger.error(f"API 返回非 200 状态码: {resp.status_code}")
-                return None
 
-            data = resp.json()
-            if data.get("code") not in (200, 0):
-                logger.error(f"API 返回错误: {data.get('msg', '未知错误')}")
-                return None
-
-            school_data = data.get("data")
-            if not school_data:
-                logger.error("API 返回的 data 字段为空")
-                return None
-
-            return school_data
-    except httpx.TimeoutException:
-        logger.error("请求超时")
+def normalize_url(value: Optional[str]) -> Optional[str]:
+    if not value:
         return None
-    except Exception as e:
-        logger.error(f"请求异常: {e}")
+    value = value.strip()
+    if not value:
         return None
+    if value.startswith(("http://", "https://")):
+        return value
+    return f"https://{value}"
 
 
 def get_school_info_from_local_file(school_id: int, school_code: Optional[str] = None):
-    """Load school metadata from the bundled school_data.json file."""
     school_file = Path(__file__).with_name("school_data.json")
     if not school_file.exists():
         return None
@@ -73,13 +58,159 @@ def get_school_info_from_local_file(school_id: int, school_code: Optional[str] =
     return None
 
 
-async def ensure_school_exists(school_id: int, school_code: str = None) -> bool:
-    """Ensure the school exists locally; fall back to local JSON then remote API."""
+async def get_school_info_from_api(school_code: str):
+    import httpx
+
+    url = f"https://h.tsnkj.com/upms/sysSchool/getSchoolInfo?schoolCode={school_code}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers={"User-Agent": "okhttp/4.9.0"})
+            if resp.status_code != 200:
+                logger.error(f"学校信息接口返回非 200 状态码: {resp.status_code}")
+                return None
+
+            data = resp.json()
+            if data.get("code") not in (200, 0):
+                logger.error(f"学校信息接口返回错误: {data.get('msg', '未知错误')}")
+                return None
+
+            school_data = data.get("data")
+            if not school_data:
+                logger.error("学校信息接口返回的 data 字段为空")
+                return None
+
+            return school_data
+    except httpx.TimeoutException:
+        logger.error("请求学校信息超时")
+        return None
+    except Exception as e:
+        logger.error(f"请求学校信息异常: {e}")
+        return None
+
+
+def read_school_seed_from_env(school_id: int, school_code: str) -> dict:
+    sys_type_raw = os.getenv("SYS_TYPE")
+    sys_type = None
+    if sys_type_raw:
+        try:
+            sys_type = int(sys_type_raw)
+        except ValueError:
+            logger.warning(f"忽略非法 SYS_TYPE: {sys_type_raw}")
+
+    return {
+        "school_id": school_id,
+        "school_code": school_code,
+        "school_name": os.getenv("SCHOOL_NAME"),
+        "school_url": normalize_url(os.getenv("SCHOOL_URL")),
+        "lan_url": normalize_url(os.getenv("LAN_URL")),
+        "open_id": os.getenv("OPEN_ID"),
+        "sys_type": sys_type,
+        "is_open_keep": parse_bool_env(os.getenv("IS_OPEN_KEEP"), False),
+        "is_open_live": parse_bool_env(os.getenv("IS_OPEN_LIVE"), False),
+        "is_open_encry": parse_bool_env(os.getenv("IS_OPEN_ENCRY"), False),
+    }
+
+
+def merge_school_sources(
+    school_id: int,
+    school_code: str,
+    env_seed: dict,
+    local_school: Optional[dict] = None,
+    api_school: Optional[dict] = None,
+) -> dict:
+    merged = {
+        "school_id": school_id,
+        "school_code": school_code,
+        "school_name": None,
+        "school_url": None,
+        "lan_url": None,
+        "open_id": None,
+        "sys_type": None,
+        "is_open_keep": False,
+        "is_open_live": False,
+        "is_open_encry": False,
+    }
+
+    if local_school:
+        merged.update(
+            {
+                "school_id": local_school.get("school_id", merged["school_id"]),
+                "school_code": local_school.get("school_code", merged["school_code"]),
+                "school_name": local_school.get("school_name"),
+            }
+        )
+
+    if api_school:
+        merged.update(
+            {
+                "school_id": api_school.get("schoolId", merged["school_id"]),
+                "school_code": api_school.get("schoolCode", merged["school_code"]),
+                "school_name": api_school.get("schoolName", merged["school_name"]),
+                "school_url": normalize_url(api_school.get("schoolUrl") or api_school.get("school_url")),
+                "lan_url": normalize_url(api_school.get("url")),
+                "open_id": api_school.get("openId"),
+                "sys_type": int(api_school.get("sysType", 2)),
+                "is_open_keep": api_school.get("isOpenKeep") == "1",
+                "is_open_live": api_school.get("isOpenLive") == "1",
+                "is_open_encry": api_school.get("isOpenEncry") == "1",
+            }
+        )
+
+    for key, value in env_seed.items():
+        if value is not None:
+            merged[key] = value
+
+    return merged
+
+
+def is_school_seed_usable(seed: dict) -> tuple[bool, list[str]]:
+    missing = []
+
+    if not seed.get("school_code"):
+        missing.append("school_code")
+    if not seed.get("school_name"):
+        missing.append("school_name")
+
+    sys_type = seed.get("sys_type")
+    if sys_type not in (1, 2):
+        missing.append("sys_type")
+        return False, missing
+
+    if not seed.get("open_id"):
+        missing.append("open_id")
+
+    if sys_type == 1 and not seed.get("school_url"):
+        missing.append("school_url")
+
+    if sys_type == 2 and not seed.get("lan_url"):
+        missing.append("lan_url")
+
+    return len(missing) == 0, missing
+
+
+async def save_school_seed(seed: dict, db) -> None:
+    from services.tsnSchool.tsnSchoolDao import addOrUpdateSchool
+
+    await addOrUpdateSchool(
+        schoolId=seed["school_id"],
+        schoolName=seed["school_name"],
+        schoolUrl=seed.get("school_url") or "",
+        lanUrl=seed.get("lan_url"),
+        openId=seed.get("open_id") or "",
+        isOpenKeep=seed.get("is_open_keep", False),
+        isOpenLive=seed.get("is_open_live", False),
+        isOpenEncry=seed.get("is_open_encry", False),
+        sys_type=seed["sys_type"],
+        school_code=seed["school_code"],
+        session=db,
+    )
+
+
+async def ensure_school_exists(school_id: int, school_code: str) -> bool:
     async for db in get_db():
         from sqlalchemy import select
 
         from models import TsnSchool_Model
-        from services.tsnSchool.tsnSchoolDao import addOrUpdateSchool
 
         stmt = select(TsnSchool_Model).where(TsnSchool_Model.school_id == school_id)
         result = await db.execute(stmt)
@@ -88,54 +219,46 @@ async def ensure_school_exists(school_id: int, school_code: str = None) -> bool:
             logger.info(f"学校已存在: {school.school_name} (ID: {school_id})")
             return True
 
-        if not school_code:
-            logger.error(f"学校 {school_id} 不存在且未提供 school_code，无法自动创建")
-            return False
-
+        env_seed = read_school_seed_from_env(school_id, school_code)
         local_school = get_school_info_from_local_file(school_id, school_code)
-        if local_school:
-            logger.info(f"学校 {school_id} 不存在，改用本地 school_data.json 补充学校信息...")
-            await addOrUpdateSchool(
-                schoolId=local_school["school_id"],
-                schoolName=local_school["school_name"],
-                schoolUrl=local_school.get("school_url", ""),
-                lanUrl=None,
-                openId=local_school.get("openId", ""),
-                isOpenKeep=local_school.get("isOpenKeep") == "1",
-                isOpenLive=local_school.get("isOpenLive") == "1",
-                isOpenEncry=local_school.get("isOpenEncry") == "1",
-                sys_type=int(local_school.get("sysType", 2)),
-                school_code=local_school["school_code"],
-                session=db,
-            )
-            logger.success(f"学校 {local_school['school_name']} 已从本地数据写入")
-            return True
+        api_school = await get_school_info_from_api(school_code)
 
-        logger.info(f"学校 {school_id} 不存在，尝试从远程获取 (school_code={school_code})...")
-        school_info = await get_school_info_from_api(school_code)
-        if not school_info:
-            logger.error(f"获取学校信息失败: school_code={school_code}")
+        merged_seed = merge_school_sources(
+            school_id=school_id,
+            school_code=school_code,
+            env_seed=env_seed,
+            local_school=local_school,
+            api_school=api_school,
+        )
+        usable, missing = is_school_seed_usable(merged_seed)
+
+        if not usable:
+            logger.error(
+                "无法构造完整学校配置，缺少字段: "
+                + ", ".join(missing)
+            )
+            logger.error(
+                "请在 GitHub Secrets 中补充这些字段，或等待学校信息接口恢复后再重试"
+            )
             return False
 
-        await addOrUpdateSchool(
-            schoolId=school_info["schoolId"],
-            schoolName=school_info["schoolName"],
-            schoolUrl=school_info.get("url", ""),
-            lanUrl=f"https://{school_info['url']}" if school_info.get("url") else None,
-            openId=school_info.get("openId"),
-            isOpenKeep=school_info.get("isOpenKeep") == "1",
-            isOpenLive=school_info.get("isOpenLive") == "1",
-            isOpenEncry=school_info.get("isOpenEncry") == "1",
-            sys_type=int(school_info.get("sysType", 2)),
-            school_code=school_code,
-            session=db,
-        )
-        logger.success(f"学校 {school_info['schoolName']} 插入成功")
+        source_parts = []
+        if api_school:
+            source_parts.append("远程接口")
+        if local_school:
+            source_parts.append("本地 school_data.json")
+        if any(v is not None for v in env_seed.values() if v != school_id and v != school_code):
+            source_parts.append("GitHub Secrets")
+        source_text = " + ".join(source_parts) if source_parts else "默认配置"
+        logger.info(f"学校 {school_id} 不存在，使用 {source_text} 补充学校信息...")
+
+        await save_school_seed(merged_seed, db)
+        logger.success(f"学校 {merged_seed['school_name']} 已写入本地数据库")
         return True
 
 
 async def auto_authorize_and_get_account(
-    school_id: int, username: str, password: str, school_code: str = None
+    school_id: int, username: str, password: str, school_code: str
 ) -> Optional[int]:
     if not await ensure_school_exists(school_id, school_code):
         return None

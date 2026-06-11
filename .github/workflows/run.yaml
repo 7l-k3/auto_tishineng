@@ -2,7 +2,7 @@ name: 自动刷步数
 
 on:
   schedule:
-    - cron: '0 22,4,10,14 * * *'
+    - cron: '10 8 * * *'
   workflow_dispatch:
     inputs:
       distance:
@@ -41,6 +41,14 @@ jobs:
           ACCOUNT_PASSWORD: ${{ secrets.ACCOUNT_PASSWORD }}
           SCHOOL_ID: ${{ secrets.SCHOOL_ID }}
           SCHOOL_CODE: ${{ secrets.SCHOOL_CODE }}
+          SCHOOL_NAME: ${{ secrets.SCHOOL_NAME }}
+          SCHOOL_URL: ${{ secrets.SCHOOL_URL }}
+          LAN_URL: ${{ secrets.LAN_URL }}
+          OPEN_ID: ${{ secrets.OPEN_ID }}
+          SYS_TYPE: ${{ secrets.SYS_TYPE }}
+          IS_OPEN_KEEP: ${{ secrets.IS_OPEN_KEEP }}
+          IS_OPEN_LIVE: ${{ secrets.IS_OPEN_LIVE }}
+          IS_OPEN_ENCRY: ${{ secrets.IS_OPEN_ENCRY }}
           RUN_DISTANCE: ${{ github.event_name == 'workflow_dispatch' && inputs.distance || '2.5' }}
           RUN_TYPE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_type || 'sunrun' }}
         run: python auto_run.py
