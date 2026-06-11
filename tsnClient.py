@@ -166,6 +166,10 @@ async def tsnPasswordAuthServer(schoolId, userName, password, session):
                                deviceNum, "")
         tsn.setAppId(schoolModel.open_id)
         tsn.setSchoolUrl(schoolModel.school_url)
+        logger.info(
+            f"私版登录配置: school_id={schoolId}, school_code={schoolModel.school_code}, "
+            f"school_url={schoolModel.school_url}, open_id={schoolModel.open_id}"
+        )
         loginResp = await tsn.appLogin(userName, password)
         logger.info(loginResp)
         userNum = loginResp['userNum']
